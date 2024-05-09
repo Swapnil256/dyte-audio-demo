@@ -1,77 +1,68 @@
-import { useDyteSelector } from '@dytesdk/react-web-core';
-import React, { useEffect, useRef } from 'react';
+import { useDyteMeeting, useDyteSelector } from '@dytesdk/react-web-core';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import DyteAudioHandler from './DyteAudioHandler';
 
 const Audio = () => {
+  const { meeting } = useDyteMeeting();
   const joinedParticipants = useDyteSelector((m) =>
     m.participants.joined.toArray()
   );
-  const audioElement = useRef<HTMLAudioElement>(null);
-
-  // const [joinedParticipantTracks] = useParticipantsInfoAtom();
-
-  // const mediaTracks = joinedParticipantTracks
-  //   .map(pt => pt.audioTracks?.id)
-  //   .filter(v => !!v);
-
-  // console.log({ mediaTracks });
+  const [audioHandler] = useState(new DyteAudioHandler());
+  const audioUpdateListener = useCallback((
+    { id, audioEnabled, audioTrack }: { id: string, audioEnabled: boolean, audioTrack: MediaStreamTrack}
+  ) => {
+    const audioId = `audio-${id}`;
+    if (audioEnabled && audioTrack != null) {
+      audioHandler.addTrack(audioId, audioTrack);
+    } else {
+      audioHandler.removeTrack(audioId);
+    }
+  }, [audioHandler]);
 
   useEffect(() => {
-    let audioContextClone = (window as any).audioCtx;
-    if (!audioContextClone) {
-      // @ts-ignore -- legacy support
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      const _audioContext = new AudioContext();
-      audioContextClone = _audioContext;
-      (window as any).audioCtx = _audioContext;
-    }
-    if (!audioElement.current) {
-      console.log('no audio el found to play track');
-      return;
-    }
-
-    if (audioContextClone.state === 'suspended') {
-      audioContextClone.resume();
-    }
-
-    const dest = audioContextClone.createMediaStreamDestination();
-
-    const audioSources: MediaStreamAudioSourceNode[] = [];
     for (const participant of joinedParticipants) {
-      const { audioTrack, audioEnabled, screenShareEnabled } = participant;
-      if (audioEnabled && audioTrack && !screenShareEnabled) {
-        const mediaStream = new MediaStream();
-        mediaStream.addTrack(audioTrack);
-        const contextSource =
-          audioContextClone.createMediaStreamSource(mediaStream);
-        console.log('MediaStream tracks:', mediaStream.getAudioTracks());
-        audioSources.push(contextSource);
-      }
+      audioUpdateListener(participant);
     }
-    audioSources.forEach((sourceNode) => sourceNode.connect(dest));
-    console.log('Destination stream --', dest.stream);
-    audioElement.current.srcObject = dest.stream;
-    console.log('Audio element readyState:', audioElement.current.readyState);
-    console.log('AudioContext sample rate:', audioContextClone.sampleRate);
-    return () => {
-      if (!audioElement.current) {
-        console.log('no audio el found to play track -- unmounting');
-        return;
-      }
-      audioSources.forEach((sourceNode) => sourceNode.disconnect(dest));
-      audioElement.current.srcObject = null;
-      dest.disconnect();
+  }, [audioUpdateListener, joinedParticipants]);
+
+  useEffect(() => {
+
+    const participantLeftListener = ({ id }: { id: string}) => {
+      audioHandler.removeTrack(`audio-${id}`);
+      audioHandler.removeTrack(`screenshare-${id}`);
     };
-  }, [joinedParticipants]);
+
+    const screenShareUpdateListener = (
+      { id, screenShareEnabled, screenShareTracks }: { id: string, screenShareEnabled: boolean, screenShareTracks: any}
+    ) => {
+      const audioId = `screenshare-${id}`;
+      if (screenShareEnabled && screenShareTracks.audio != null) {
+        audioHandler.addTrack(audioId, screenShareTracks.audio);
+      } else {
+        audioHandler.removeTrack(audioId);
+      }
+    };
+
+    const deviceUpdateListener = ({ device }: any) => {
+      if (device.kind === 'audiooutput') {
+        audioHandler.setDevice(device.deviceId);
+      }
+    };
+
+    meeting.participants.joined.addListener('audioUpdate', audioUpdateListener);
+    meeting.participants.joined.addListener('screenShareUpdate', screenShareUpdateListener);
+    meeting.participants.joined.addListener('participantLeft', participantLeftListener);
+    meeting.self.addListener('deviceUpdate', deviceUpdateListener);
+    return () => {
+      meeting.participants.joined.removeListener('audioUpdate', audioUpdateListener);
+      meeting.participants.joined.removeListener('screenShareUpdate', screenShareUpdateListener);
+      meeting.participants.joined.removeListener('participantLeft', participantLeftListener);
+      meeting.self.removeListener('deviceUpdate', deviceUpdateListener);
+    }
+  }, [meeting]);
+
   return (
-    <audio
-      id="dyte-meeting-audio-output"
-      ref={audioElement}
-      autoPlay
-      onPause={(el) => {
-        console.log('is Paused');
-      }}
-      onError={(err) => console.error('error in audio el', err)}
-    />
+    null
   );
 };
 
